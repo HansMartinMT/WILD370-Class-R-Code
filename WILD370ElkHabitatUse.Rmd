@@ -1,0 +1,798 @@
+---
+title: "WILD370ELKHABITATUSE"
+author: "HansMartin"
+date: "October 18, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+Load necessary packages for analysis.
+```{r include=FALSE, echo=FALSE}
+#function to install and load required packages
+ipak <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+
+#load or install these packages:
+packages <- c("Rcpp","jsonlite","ks", "lattice", "plotrix", "adehabitatHR", "maptools", "foreign", "rgdal", "sp", "raster","ggplot2","colorRamps","rgeos","leaflet","lubridate", "htmlwidgets","move","tmap","tmaptools")
+
+#run function to install packages
+ipak(packages)
+```
+
+Load Data
+```{r}
+elk25012<-read.csv("C:/Users/Hans Martin/Documents/ElkCollarData/GPS_Collar25012_20171018151748.csv",stringsAsFactors=FALSE)
+elk25009<-read.csv("C:/Users/Hans Martin/Documents/ElkCollarData/GPS_Collar25009_20171018151418.csv",stringsAsFactors=FALSE)
+elk25010<-read.csv("C:/Users/Hans Martin/Documents/ElkCollarData/GPS_Collar25010_20171018151711.csv",stringsAsFactors=FALSE)
+elk25013<-read.csv("C:/Users/Hans Martin/Documents/ElkCollarData/GPS_Collar25013_20171018151812.csv",stringsAsFactors=FALSE)
+elk25011<-read.csv("C:/Users/Hans Martin/Documents/ElkCollarData/GPS_Collar25011_20171018151729.csv",stringsAsFactors=FALSE)
+elkdat<-do.call("rbind", list(elk25009,elk25010,elk25011,elk25012,elk25013))
+
+```
+Format the date and time to create a time stamp. 
+```{r}
+elkdat$LMT24time<-format(strptime(elkdat$LMT_Time,"%I:%M:%S %p"), format="%H:%M:%S") #this function will change 12 hour time to 24 hour time.
+  
+elkdat$LMTmonth<-unlist(lapply(elkdat$LMT_Date,function(x) strsplit(x, split= "/")[[1]][1])) #extracts month
+elkdat$LMTday<-unlist(lapply(elkdat$LMT_Date,function(x) strsplit(x, split= "/")[[1]][2]))#extracts day
+elkdat$LMTyear<-unlist(lapply(elkdat$LMT_Date,function(x) strsplit(x, split= "/")[[1]][3]))#extracts year
+
+elkdat$LMT24date<-paste(elkdat$LMTyear,elkdat$LMTmonth,elkdat$LMTday, sep="-") #combines date by Year-month-day
+elkdat$timestamp<-paste(elkdat$LMT24date,elkdat$LMT24time,sep=" ") #creates a timestamp
+#elkdat$timestamp<-strptime(elkdat$timestamp,format="%Y-%m-%d %H:%M:%S")
+elkdat$LMTtimestamp<-as.POSIXlt(elkdat$timestamp, format="%Y-%m-%d %H:%M:%S",tz="America/Denver") #format the time stamp.
+```
+This animal was caught on February 28th so we only want data starting on March 1.
+```{r}
+elkdat<-elkdat[elkdat$LMTtimestamp>"2017-03-07 00:00:00 MST",] 
+```
+Create a spatial object
+```{r echo=F}
+#create a vector of x and y coordinates
+rawcoords<-cbind(elkdat$Longitude....,elkdat$Latitude....)
+#nrow(coords)
+#sp=SpatialPoints(rawcoords) #Warning message! there are NA values in coordinate values
+coords<-rawcoords[complete.cases(rawcoords),] #remove cases that aren't complete
+#nrow(coords) #ok, so a total of 8 "locations" An AWESOME FIX RATE!!!!
+
+sp=SpatialPoints(coords,CRS("+init=epsg:4326")) #now make a spatial points
+elkdatspdf<-SpatialPointsDataFrame(
+  coords=sp, 
+  data=elkdat[complete.cases(rawcoords),]
+)#add data to make this a spatial points data frame
+latlong="+init=epsg:4326" #create a spatial reference for the data
+#Or you can use +proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs 
+#proj4string(elkdatspdf)#no current geographic reference system
+#project that
+proj4string(elkdatspdf)<-CRS(latlong) #specify the coordinate reference system for the data
+elkproj<-"+proj=utm +zone=11 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"
+spTransform(elkdatspdf,CRS="+proj=utm +zone=11 +ellps=GRS80")
+elkdatspdf@data$summer<-0 #add a summer vs winter variable
+elkdatspdf@data$summer[elkdatspdf@data$LMTtimestamp>=as.POSIXlt("2017-05-15", format="%Y-%m-%d") & elkdatspdf@data$LMTtimestamp<=as.POSIXlt("2017-10-15", format="%Y-%m-%d")]<-1 #add a summer vs winter variable
+plot(elkdatspdf) #Plot the resulting GPS location data
+```
+
+Upload the study extent
+```{r}
+studyextent<-readOGR("C:/Users/Hans Martin/Documents/R_Data/WILD370Project/YHT Study Extent/YHTstudy_extent.shp")
+studyextent<-spTransform(studyextent,elkproj) #reproject using the landcover projection
+elkdatspdf<-spTransform(elkdatspdf,elkproj)
+```
+
+Download the landcover type raster layer
+```{r}
+landcover16<-raster("C:/Users/Hans Martin/Documents/R_Data/WILD370Project/landcover16-20171026T151210Z-001/landcover16")
+#########################################################
+#clip the raster so it only covers the study area
+    
+#landcover16prj<-projectRaster(landcover16,crs=elkproj) #reproject the raster so that it matches the landcover raster
+landcover16clip<-crop(x=landcover16,y=studyextent) #clip the raster so that only the study extent
+
+writeRaster(landcover16clip, filename="landcover16clipYHTBANFF.tif", overwrite=T) #write raster so we don't need to do this step again
+
+landcover_YHTBANFF_2016<-raster("landcover16clipYHTBANFF.tif") #load the elevation layer
+```
+
+
+Download the TotalForageBiomass raster layer
+```{r}
+totalbiomass16<-raster("C:/Users/Hans Martin/Documents/R_Data/WILD370Project/total16-20171027T154014Z-001/total16")
+#########################################################
+totalbiomass16prj<-projectRaster(totalbiomass16,crs=elkproj) #reproject the raster so that it matches the landcover raster
+
+```
+This step is to combine rasters and was ommitted
+Upload Digital Elevation Model for the study area
+#```{r}
+elev1<-raster("C:/Users/Hans Martin/Documents/R_Data/WILD370Project/DEM_1.tif")
+elev2<-raster("C:/Users/Hans Martin/Documents/R_Data/WILD370Project/DEM_2.tif")
+elev3<-raster("C:/Users/Hans Martin/Documents/R_Data/WILD370Project/DEM_3.tif")
+#create a mosaic of the 3 DEM rasters
+rast.list <- list(elev1, elev2, elev3)   #create a list of the 3 rasters that make up the study area  
+  rast.list$fun <- mean #take the mean if rasters overlap
+    elev <- do.call(mosaic,rast.list) #mosaic all 3 rasters together
+#########################################################
+#clip the raster so it only covers the study area
+    
+elevprj<-projectRaster(elev,crs=elkproj) #reproject the raster so that it matches the landcover raster
+elevclip<-crop(x=elevprj,y=studyextent) #clip the raster so that only the study extent
+
+writeRaster(elevclip, filename="elevationDEMYHTBANFF.tif", overwrite=T) #write raster so we don't need to do this step again
+```{r}
+elevationDEM<-raster("elevationDEMYHTBANFF.tif") #load the elevation layer
+```
+Check the CRS of all layers.
+```{r}
+proj4string(elevationDEM)
+proj4string(studyextent)
+proj4string(elkdatspdf)
+proj4string(landcover16)
+proj4string(totalbiomass16prj)
+```
+
+Plot the elkdat's locations on the raster map and study area.
+```{r}
+plot(landcover_YHTBANFF_2016)
+#plot(landcover)
+plot(studyextent, add=T)
+plot(elkdatspdf,add=T)
+```  
+Plot the landcover layer with the gps data
+```{r}
+plot(elevationDEM)
+plot(studyextent, add=T)
+plot(elkdatspdf,add=T)
+```  
+How should we define availability of resources?
+Should we use the "homerange" of all of the collared elk?
+```{r}
+#calculate area for different percents of MPC
+mcpareaelkdat <- mcp.area(elkdatspdf, percent=95) #area of the 95% minimum convex polygon
+
+mcpelkdat<-mcp(elkdatspdf, percent=95) #obtain spatial location of the mcp
+
+#calculate 95% Kernal Density Estimate
+
+elkdatUD <- kernelUD(elkdatspdf, grid=30, extent=0.5, same4all=TRUE) # reference grid
+
+#calculate 95% Kernal Density Estimate for each individual in summer
+#elkdatspdf@data$CollarID1<-as.factor(elkdatspdf@data$CollarID)
+ind_summer_UD <- kernelUD(elkdatspdf[elkdatspdf$summer==1,2], grid=50, extent=0.5, same4all=TRUE) # reference grid
+#get polygons for the "home range" of all collared elk.
+ind_summer_KDE_95 <- getverticeshr(ind_elkdatUD, percent=95)
+
+#get polygons for the "home range" of all collared elk.
+elkdat_KDE_95 <- getverticeshr(elkdatUD, percent=95)
+
+#plot the 4 different methods of measuring where these animals were
+plot(studyextent)
+  plot(mcpelkdat,col="blue",add=T)
+  plot(elkdat_KDE_95,col="red",add=T)
+  plot(ind_summer_KDE_95, col=1:5, add=T) #plots individual
+  plot(elkdatspdf,col="black",size=0.1,add=T)
+```
+
+Scale of of use:
+How should we define use in our study? should we define scale as the 1st, 2nd, 3rd, or 4th order?
+Let's start with the 2nd order scale of use: where the homerange lies in relation to availability
+```{r}
+#generate 3000 points from elkdata KDE polygon
+mcpelkdat.avail<-spsample(mcpelkdat, 3000, "random")
+plot(mcpelkdat.avail)
+
+#check distance between randomly sampled points is less than 30 m - this may become important later to avoid sampling the same pixels. 
+out.mcpelkdat.avail<- spDists(mcpelkdat.avail) #Distance from a point to the closest point
+out2.mcpelkdat.avail<-ifelse(out.mcpelkdat.avail==0, NA, out.mcpelkdat.avail)#if the distance is zero remove that data point
+out2.mcpelkdat.avail<-out2.mcpelkdat.avail[which(out2.mcpelkdat.avail>30)] #select only points that are greater than 30 meters from each other.
+elkdat_KDE_95.avail<-spsample(elkdat_KDE_95,
+                                    n = 3000, 
+                                    type = "random")
+#check distance between randomly sampled points is less than 30 m - this may become important later to avoid sampling the same pixels. 
+out.elkdat_KDE_95.avail<- spDists(elkdat_KDE_95.avail) #Distance from a point to the closest point
+out2.elkdat_KDE_95.avail<-ifelse(out.elkdat_KDE_95.avail==0, NA, out.elkdat_KDE_95.avail)#if the distnace is zero remove that data point
+which(out2.elkdat_KDE_95.avail<=30) #these may cause trouble later... 
+```
+
+
+
+```{r}
+#generate 1000 points from elkdata KDE polygon
+elkdat_study.avail<-spsample(studyextent, 3000, "random")
+plot(elkdat_study.avail)
+
+#check distance between randomly sampled points is less than 30 m - this may become important later to avoid sampling the same pixels. 
+out.elkdat_study.avail<- spDists(elkdat_study.avail) #Distance from a point to the closest point
+out2.elkdat_study.avail<-ifelse(out.elkdat_study.avail==0, NA, out.elkdat_study.avail)#if the distnace is zero remove that data point
+which(out2.elkdat_study.avail<=30)#select only points that are greater than 30 meters from each other.
+```
+```{r}
+
+#generate 1000 points from individual elk summer estimates of homerange using the kernel density method with 95% isopleths.
+
+  ind_avail_sample1<-spsample(ind_summer_KDE_95@polygons[[1]],
+                                    n = 1000, 
+                                    type = "random")
+  ind_avail_sample1$ID<-rep(unique(ind_summer_KDE_95@data$id)[1],times=1000)
+  ind_avail_sample2<-spsample(ind_summer_KDE_95@polygons[[2]],
+                                    n = 1000, 
+                                    type = "random")
+  ind_avail_sample2$ID<-rep(unique(ind_summer_KDE_95@data$id)[2],times=1000)
+  ind_avail_sample3<-spsample(ind_summer_KDE_95@polygons[[3]],
+                                    n = 1000, 
+                                    type = "random")
+  ind_avail_sample3$ID<-rep(unique(ind_summer_KDE_95@data$id)[3],times=1000)
+  ind_avail_sample4<-spsample(ind_summer_KDE_95@polygons[[4]],
+                                    n = 1000, 
+                                    type = "random")
+  ind_avail_sample4$ID<-rep(unique(ind_summer_KDE_95@data$id)[4],times=1000)
+    ind_avail_sample5<-spsample(ind_summer_KDE_95@polygons[[5]],
+                                    n = 1000, 
+                                    type = "random")
+  ind_avail_sample5$ID<-rep(unique(ind_summer_KDE_95@data$id)[5],times=1000)
+ind_summer_KDE_95_avail<-do.call(rbind,#function that you want complete
+                  list(ind_avail_sample1,#list that you want the function done to
+                      ind_avail_sample2,
+                      ind_avail_sample3,
+                      ind_avail_sample4,
+                      ind_avail_sample5))
+
+plot(ind_summer_KDE_95_avail)
+
+```
+
+Extracting covariates from the rasters using all of the elk location data.
+```{r}
+#Extract covariate elevation values for all elk gps locations 
+elevationDEM_Elkdat<-extract(elevationDEM, elkdatspdf)
+
+#Extract covariate landcover values for all elk gps locations 
+landcover_Elkdat<-extract(landcover_YHTBANFF_2016, elkdatspdf)
+
+#Extract covariate landcover values for all elk gps locations 
+totalbiomass16_Elkdat<-extract(totalbiomass16prj, elkdatspdf)
+```
+
+Extracting covariates from the rasters using all of the available points from the MCP.
+```{r}
+#Extract covariate elevation values for all elk gps locations 
+elevationDEM_mcp_avail<-extract(elevationDEM, mcpelkdat.avail)
+
+#Extract covariate landcover values for all elk gps locations 
+landcover_mcp_avail<-extract(landcover_YHTBANFF_2016, mcpelkdat.avail)
+
+#Extract covariate landcover values for all elk gps locations 
+totalbiomass16_mcp_avail<-extract(totalbiomass16prj, mcpelkdat.avail)
+```
+
+Extracting covariates from the rasters using all of the available points from the KDE.
+```{r}
+#Extract covariate elevation values for all elk gps locations 
+elevationDEM_kde_avail<-extract(elevationDEM, elkdat_KDE_95.avail)
+
+#Extract covariate landcover values for all elk gps locations 
+landcover_kde_avail<-extract(landcover_YHTBANFF_2016, elkdat_KDE_95.avail)
+#Extract covariate landcover values for all elk gps locations 
+totalbiomass16_kde_avail<-extract(totalbiomass16prj, elkdat_KDE_95.avail)
+```
+
+Extracting covariates from the rasters using all of the available points from the study area.
+```{r}
+#Extract covariate elevation values for all elk gps locations 
+elevationDEM_study_avail<-extract(elevationDEM, elkdat_study.avail)
+
+#Extract covariate landcover values for all elk gps locations 
+landcover_study_avail<-extract(landcover_YHTBANFF_2016, elkdat_study.avail)
+
+#Extract covariate landcover values for all elk gps locations 
+totalbiomass16_study_avail<-extract(totalbiomass16prj, elkdat_study.avail)
+```
+
+Extracting covariates from the rasters using sampled points from individual elk's summer homerange.
+```{r}
+#Extract covariate elevation values for all elk gps locations 
+elevationDEM_ind_avail<-extract(elevationDEM, ind_summer_KDE_95_avail)
+
+#Extract covariate landcover values for all elk gps locations 
+landcover_ind_avail<-extract(landcover_YHTBANFF_2016, ind_summer_KDE_95_avail)
+
+#Extract covariate landcover values for all elk gps locations 
+totalbiomass16_ind_avail<-extract(totalbiomass16prj, ind_summer_KDE_95_avail)
+```
+Create 3 data sets with availability being defined by the study area, the mcp, and the kde.
+```{r}
+elkused <- data.frame(
+  Easting=elkdatspdf@coords[,1], 
+  Northing=elkdatspdf@coords[,2],
+  elevation=elevationDEM_Elkdat,
+  landcover=landcover_Elkdat,
+  totalbiomass=totalbiomass16_Elkdat, 
+  elkid=elkdatspdf$CollarID, 
+  Date=elkdatspdf$LMTtimestamp, 
+  used=1)
+elkused$summer<-0 #add a summer vs winter variable
+elkused$summer[elkused$Date>=as.POSIXlt("2017-05-15", format="%Y-%m-%d") & elkused$Date<=as.POSIXlt("2017-10-15", format="%Y-%m-%d")]<-1 #add a summer vs winter variable with summer being between may 15th and october 15th
+str(elkused)
+
+
+elkavail_kde<-data.frame(
+  Easting=elkdat_KDE_95.avail@coords[,1],
+  Northing=elkdat_KDE_95.avail@coords[,2],
+  elevation=elevationDEM_kde_avail,
+  landcover=landcover_kde_avail,
+  totalbiomass=totalbiomass16_kde_avail, 
+  elkid=1,
+  Date=NA, 
+  used=0, 
+  summer=NA
+  )
+
+elkavail_mcp<-data.frame(
+  Easting=mcpelkdat.avail@coords[,1],
+  Northing=mcpelkdat.avail@coords[,2],
+  elevation=elevationDEM_mcp_avail,
+  landcover=landcover_mcp_avail,
+  totalbiomass=totalbiomass16_mcp_avail, 
+  elkid=1,
+  Date=NA, 
+  used=0, 
+  summer=NA
+  )
+
+elkavail_studyarea<-data.frame(
+  Easting=elkdat_study.avail@coords[,1],
+  Northing=elkdat_study.avail@coords[,2],
+  elevation=elevationDEM_study_avail,
+  landcover=landcover_study_avail,
+  totalbiomass=totalbiomass16_study_avail, 
+  elkid=1,
+  Date=NA, 
+  used=0, 
+  summer=NA
+  )
+
+elkavail_summer_ind<-data.frame(
+  Easting=ind_summer_KDE_95_avail@coords[,1],
+  Northing=ind_summer_KDE_95_avail@coords[,2],
+  elevation=elevationDEM_ind_avail,
+  landcover=landcover_ind_avail,
+  totalbiomass=totalbiomass16_ind_avail, 
+  elkid=1,
+  Date=NA, 
+  used=0, 
+  summer=1
+  )
+elkusedavail_studyarea<-rbind(elkused, elkavail_studyarea)
+
+
+elkusedavail_mcp <- rbind(elkused, elkavail_mcp)
+
+
+
+elkusedavail_kde <- rbind(elkused, elkavail_kde)
+
+elkusedavail_summer_ind <- rbind(elkused[elkused$summer==1,], elkavail_summer_ind)
+
+elkusedavail_kde$landcover_type= ifelse(elkusedavail_kde$landcover == 0, NA, 
+                            ifelse(elkusedavail_kde$landcover == 1, "Conifer", 
+                            ifelse(elkusedavail_kde$landcover == 2, "Conifer", 
+                            ifelse(elkusedavail_kde$landcover == 3, "Conifer", 
+                            ifelse(elkusedavail_kde$landcover == 4, "Deciduous", 
+                            ifelse(elkusedavail_kde$landcover == 5, "Mixed", 
+                            ifelse(elkusedavail_kde$landcover == 6, "Regen", 
+                            ifelse(elkusedavail_kde$landcover == 7, "Herbaceous",                                   
+                            ifelse(elkusedavail_kde$landcover == 8, "Shrub",                               
+                            ifelse(elkusedavail_kde$landcover == 9, "Water", 
+                            ifelse(elkusedavail_kde$landcover == 10, "Rock-Ice", 
+                            ifelse(elkusedavail_kde$landcover == 11, NA, #cloud
+                            ifelse(elkusedavail_kde$landcover == 12, "Burn",                               
+                            ifelse(elkusedavail_kde$landcover == 13, "Burn", 
+                            ifelse(elkusedavail_kde$landcover == 14, "Burn", 
+                            ifelse(elkusedavail_kde$landcover == 15, "Alpine", "Alpine"))))))))))))))))
+elkusedavail_mcp$landcover_type= ifelse(elkusedavail_mcp$landcover == 0, NA, 
+                            ifelse(elkusedavail_mcp$landcover == 1, "Conifer", 
+                            ifelse(elkusedavail_mcp$landcover == 2, "Conifer", 
+                            ifelse(elkusedavail_mcp$landcover == 3, "Conifer", 
+                            ifelse(elkusedavail_mcp$landcover == 4, "Deciduous", 
+                            ifelse(elkusedavail_mcp$landcover == 5, "Mixed", 
+                            ifelse(elkusedavail_mcp$landcover == 6, "Regen", 
+                            ifelse(elkusedavail_mcp$landcover == 7, "Herbaceous",                                   
+                            ifelse(elkusedavail_mcp$landcover == 8, "Shrub",                               
+                            ifelse(elkusedavail_mcp$landcover == 9, "Water", 
+                            ifelse(elkusedavail_mcp$landcover == 10, "Rock-Ice", 
+                            ifelse(elkusedavail_mcp$landcover == 11, NA, #cloud
+                            ifelse(elkusedavail_mcp$landcover == 12, "Burn",                               
+                            ifelse(elkusedavail_mcp$landcover == 13, "Burn", 
+                            ifelse(elkusedavail_mcp$landcover == 14, "Burn", 
+                            ifelse(elkusedavail_mcp$landcover == 15, "Alpine", "Alpine"))))))))))))))))
+elkusedavail_studyarea$landcover_type= ifelse(elkusedavail_studyarea$landcover == 0, NA, 
+                            ifelse(elkusedavail_studyarea$landcover == 1, "Conifer", 
+                            ifelse(elkusedavail_studyarea$landcover == 2, "Conifer", 
+                            ifelse(elkusedavail_studyarea$landcover == 3, "Conifer", 
+                            ifelse(elkusedavail_studyarea$landcover == 4, "Deciduous", 
+                            ifelse(elkusedavail_studyarea$landcover == 5, "Mixed", 
+                            ifelse(elkusedavail_studyarea$landcover == 6, "Regen", 
+                            ifelse(elkusedavail_studyarea$landcover == 7, "Herbaceous",                                   
+                            ifelse(elkusedavail_studyarea$landcover == 8, "Shrub",                               
+                            ifelse(elkusedavail_studyarea$landcover == 9, "Water", 
+                            ifelse(elkusedavail_studyarea$landcover == 10, "Rock-Ice", 
+                            ifelse(elkusedavail_studyarea$landcover == 11, NA, #cloud
+                            ifelse(elkusedavail_studyarea$landcover == 12, "Burn",                               
+                            ifelse(elkusedavail_studyarea$landcover == 13, "Burn", 
+                            ifelse(elkusedavail_studyarea$landcover == 14, "Burn", 
+                            ifelse(elkusedavail_studyarea$landcover == 15, "Alpine", "Alpine"))))))))))))))))
+
+elkusedavail_summer_ind$landcover_type= ifelse(elkusedavail_summer_ind$landcover == 0, NA, 
+                            ifelse(elkusedavail_summer_ind$landcover == 1, "Conifer", 
+                            ifelse(elkusedavail_summer_ind$landcover == 2, "Conifer", 
+                            ifelse(elkusedavail_summer_ind$landcover == 3, "Conifer", 
+                            ifelse(elkusedavail_summer_ind$landcover == 4, "Deciduous", 
+                            ifelse(elkusedavail_summer_ind$landcover == 5, "Mixed", 
+                            ifelse(elkusedavail_summer_ind$landcover == 6, "Regen", 
+                            ifelse(elkusedavail_summer_ind$landcover == 7, "Herbaceous",                                   
+                            ifelse(elkusedavail_summer_ind$landcover == 8, "Shrub",                               
+                            ifelse(elkusedavail_summer_ind$landcover == 9, "Water", 
+                            ifelse(elkusedavail_summer_ind$landcover == 10, "Rock-Ice", 
+                            ifelse(elkusedavail_summer_ind$landcover == 11, NA, #cloud
+                            ifelse(elkusedavail_summer_ind$landcover == 12, "Burn",                               
+                            ifelse(elkusedavail_summer_ind$landcover == 13, "Burn", 
+                            ifelse(elkusedavail_summer_ind$landcover == 14, "Burn", 
+                            ifelse(elkusedavail_summer_ind$landcover == 15, "Alpine", "Alpine"))))))))))))))))
+# elkusedavail_studyarea$landcover_type= ifelse(elkusedavail_studyarea$landcover == 0, NA, 
+#                             ifelse(elkusedavail_studyarea$landcover == 1, "Open Conifer", 
+#                             ifelse(elkusedavail_studyarea$landcover == 2, "Moderate Conifer", 
+#                             ifelse(elkusedavail_studyarea$landcover == 3, "Closed Conifer", 
+#                             ifelse(elkusedavail_studyarea$landcover == 4, "Deciduous", 
+#                             ifelse(elkusedavail_studyarea$landcover == 5, "Mixed", 
+#                             ifelse(elkusedavail_studyarea$landcover == 6, "Regen", 
+#                             ifelse(elkusedavail_studyarea$landcover == 7, "Herbaceous",                                   
+#                             ifelse(elkusedavail_studyarea$landcover == 8, "Shrub",                               
+#                             ifelse(elkusedavail_studyarea$landcover == 9, "Water", 
+#                             ifelse(elkusedavail_studyarea$landcover == 10, "Rock-Ice", 
+#                             ifelse(elkusedavail_studyarea$landcover == 11, NA, #cloud
+#                             ifelse(elkusedavail_studyarea$landcover == 12, "Burn-Forest",                               
+#                             ifelse(elkusedavail_studyarea$landcover == 13, "Burn-Grassland", 
+#                             ifelse(elkusedavail_studyarea$landcover == 14, "Burn-Shrub", 
+#                             ifelse(elkusedavail_studyarea$landcover == 15, "Alpine Herb", "Alpine Shrub"))))))))))))))))
+elkusedavail_kdecomplete<-elkusedavail_kde[complete.cases(elkusedavail_kde[,1:5]),]
+elkusedavail_studyareacomplete<-elkusedavail_studyarea[complete.cases(elkusedavail_studyarea[,1:5]),]
+elkusedavail_mcpcomplete<-elkusedavail_mcp[complete.cases(elkusedavail_mcp[,1:5]),]
+elkusedavail_kdecomplete<-elkusedavail_kde[complete.cases(elkusedavail_kde[,10]),]
+elkusedavail_studyareacomplete<-elkusedavail_studyarea[complete.cases(elkusedavail_studyarea[,10]),]
+elkusedavail_mcpcomplete<-elkusedavail_mcp[complete.cases(elkusedavail_mcp[,10]),]
+elkusedavail_summer_indcomplete<-elkusedavail_summer_ind[complete.cases(elkusedavail_summer_ind[1:5,10]),]
+#save our data to csv files 
+write.csv(elkusedavail_studyareacomplete, "elkused_avail_studyarea.csv")
+write.csv(elkusedavail_mcpcomplete, "elkused_avail_mcp.csv")
+write.csv(elkusedavail_kdecomplete, "elkusedavail_kde.csv")
+write.csv(elkusedavail_summer_indcomplete, "elkusedavail_ind_summer.csv")
+```
+```{r}
+elkusedavail_studyareacomplete<-read.csv("elkused_avail_studyarea.csv")
+elkusedavail_mcpcomplete<-read.csv( "elkused_avail_mcp.csv")
+elkusedavail_kdecomplete<-read.csv( "elkusedavail_kde.csv")
+```
+
+#Lets plot the used vs available points using a minimum convex polygon as our "available" locations
+```{r}
+coordsmcp<-cbind(elkusedavail_mcpcomplete$Easting,elkusedavail_mcpcomplete$Northing)
+datamcp<-elkusedavail_mcpcomplete
+spmcp=SpatialPoints(coordsmcp,CRS("+proj=utm +zone=11 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"))
+elkused_avail_mcp_spdf<-SpatialPointsDataFrame(spmcp,datamcp)
+# lets plot them all together, used and home-range level availability
+plot(elkused_avail_mcp_spdf,col=c("red","blue")[as.factor(elkused_avail_mcp_spdf$used)], ylab="Northing",xlab="Easting")
+legend(555000,5742500,unique(as.factor(elkused_avail_mcp_spdf$used)),col=c("blue","red"),pch=1)
+
+```
+#Lets plot the used vs available points using a 95% isopleths of kernel density as our "available" locations
+```{r}
+coordskde<-cbind(elkusedavail_kdecomplete$Easting,elkusedavail_kdecomplete$Northing) #coordinates
+datakde<-elkusedavail_kdecomplete #data that corresponds to the coordinates above
+spkde=SpatialPoints(coordskde,CRS("+proj=utm +zone=11 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"))
+elkused_avail_kde_spdf<-SpatialPointsDataFrame(spkde,datakde)
+# lets plot them all together, used and home-range level availability
+plot(elkused_avail_kde_spdf,col=c("red","blue")[as.factor(elkused_avail_kde_spdf$used)], ylab="Northing",xlab="Easting")
+legend(555000,5742500,unique(elkused_avail_kde_spdf$used),col=c("blue","red"),pch=1)
+```
+
+
+#Lets plot the used vs available points using the whole study area as our "available" locations
+```{r}
+coordsstudy<-cbind(elkusedavail_studyareacomplete$Easting,elkusedavail_studyareacomplete$Northing)
+datastudy<-elkusedavail_studyareacomplete
+spstudy=SpatialPoints(coordsstudy,CRS("+proj=utm +zone=11 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"))
+elkused_avail_study_spdf<-SpatialPointsDataFrame(spstudy,datastudy)
+# lets plot them all together, used and home-range level availability
+plot(elkused_avail_study_spdf,col=c("red","blue")[as.factor(elkused_avail_study_spdf$used)], ylab="Northing",xlab="Easting")
+legend(555000,5742500,unique(elkused_avail_study_spdf$used),col=c("blue","red"),pch=1)
+```
+
+
+Finally! Lets look at Habitat selection!!
+```{r}
+# graphing manually in R
+hist(elkused_avail_study_spdf$elevation[elkused_avail_study_spdf$used==1]) #create a frequency histogram of elevation at used locations.
+# change width of bins for histogram
+hist(elkused_avail_study_spdf$elevation, breaks = 50)
+## add text and stuff
+hist(elkused_avail_study_spdf$elevation[elkused_avail_study_spdf$used==1], breaks = 50, probability = TRUE, main="Elk Habitat Selection", xlab="Elevation") #probability =true changes the historgram from a frequency historgram to a density curve.
+```
+
+```{r}
+# Plot summer use of elevation
+par(mfrow=c(2,1)) #mfrow=c(number of rows, number of columns) this function is used to combine two plots into one figure
+hist(elkusedavail_studyareacomplete$elevation[elkusedavail_studyareacomplete$used==1 & elkusedavail_studyareacomplete$summer==1],breaks=50, xlim = c(min(elkusedavail_studyareacomplete$elevation),max(elkusedavail_studyareacomplete$elevation)), probability = TRUE, main="Summer Elk Habitat Selection", xlab="Elevation") 
+
+
+# Plot winter use of elevation
+hist(elkusedavail_studyareacomplete$elevation[elkusedavail_studyareacomplete$used==1 & elkusedavail_studyareacomplete$summer==0],breaks=50,col="darkgray",xlim = c(min(elkusedavail_studyareacomplete$elevation),max(elkusedavail_studyareacomplete$elevation)), probability =TRUE,main="Winter Elk Habitat Selection", xlab="Elevation") 
+```
+(another way that you can plot the use of elevation side by side)
+```{r}
+## another way to make a similar graph
+histogram(~elevation|summer, data = elkusedavail_studyareacomplete[elkusedavail_studyareacomplete$used==1,], nint = 50)
+```
+
+```{r}
+boxplot(elevation~summer, data=elkusedavail_studyareacomplete[elkusedavail_studyareacomplete$used==1,], id.method="y")
+```
+
+## QUESTION: what can you tell about the use of elevation for elk between summer and winter???
+
+Lets now look at how elk used different landcover types. we will start by looking at the overall "yearly" use of habitat types.
+```{r, fig.height=5, fig.width=12}
+ggplot(
+  elkusedavail_studyareacomplete[elkusedavail_studyareacomplete$used==1,],
+    aes(x=landcover_type)
+  )+
+    geom_bar(
+      aes(
+        y=(..count..)/sum(..count..)
+        )
+      )+
+  ggtitle("Elk Use of Landcover") +
+  labs(x="Landcover Type",y="% Used") 
+  
+```
+
+
+
+Lets now look at how elk uselandcover types in summer vs winter.
+```{r, fig.height=5, fig.width=12}
+ggplot(
+  elkusedavail_studyareacomplete[elkusedavail_studyareacomplete$used==1,], #data to be used 
+    aes(
+      x=landcover_type, #column in the dataframe with categorical data
+      fill=as.factor(summer) #compares summer to winter values
+      )
+  )+
+    geom_bar(
+      aes(
+        y=(..count..)/sum(..count..), #column in the dataframe with categorical data
+        fill=as.factor(summer) # this equation plots the % use instead of frequency
+        )
+    )+
+ 
+  ggtitle("Elk Use of Landcover") + #title of the plot
+  labs(x="Landcover Type", #label of the x-axis
+       y="% Used", #label of the y axis
+       fill = "Season")+ #labels the "fill" variable
+  scale_fill_manual(labels = c("Winter", "Summer"), #labels the fill variables
+                    values = c("grey3", "grey50")#Specifying the colors of the bars
+                    )
+```
+
+
+Lets now compare how elk uselandcover types compared to their availability.
+```{r, fig.height=5, fig.width=12}
+
+ggplot(
+  elkusedavail_studyareacomplete, #data to be used 
+    aes(
+      x=landcover_type, #column in the dataframe with categorical data
+      fill=as.factor(used) #compares summer to winter values
+      )
+  )+
+    geom_bar(
+      aes(
+        y=(..count..)/sum(..count..) #column in the dataframe with categorical data
+        #fill=as.factor(summer) # this equation plots the % use instead of frequency
+        )
+    )+
+ 
+  ggtitle("Elk Use of Landcover") +
+  labs(x="Landcover Type",y="% Used",fill = "")+
+  scale_fill_manual(labels = c("Available", "Used"), values = c("grey3", "grey50"))
+```
+
+Lets actually look at the selection ratios to see what landcover elk are selecting.
+```{r}
+#names.m = data.frame(unique(elkusedavail_studyareacomplete$landcover),unique(elkusedavail_studyareacomplete$landcover_type))
+# Now I put it order
+#names.m = names.m[order(names.m)[1:15],]
+#names.m
+elkusedavail_studyareacomplete$used_factor<-as.factor(elkusedavail_studyareacomplete$used)
+# Define a factor variable, landcov.f, 
+# the sorted table makes defining the names of your factor level easy!
+#Note that there are many alternative ways of defining your landcover/habitattype 
+# as a factor. This method seemed most explicit in terms of defining the design matrix
+#elkusedavail_studyareacomplete$landcov.f=factor(elkusedavail_studyareacomplete$landcover,labels = #names.m$unique.elkusedavail_studyareacomplete.landcover_type.)
+
+
+# Univariate Selection Ratio's
+landcovSelection_studyarea <-table(elkusedavail_studyareacomplete$landcover_type, elkusedavail_studyareacomplete$used_factor)
+ 
+# Univariate Selection Ratio's
+
+
+landcovSelection2 <- as.data.frame.matrix(landcovSelection_studyarea) #creates a matrix from the dataframe
+colnames(landcovSelection2)[1:2] <- c("avail","used") #label the columns in the matrix
+landcovSelection2$selection <- 
+  (
+    (landcovSelection2$used #number of used locations for the corresponding line of landcover type
+   / sum( 
+    landcovSelection2$used #total number of used locations
+    )
+  ) 
+/ 
+  (landcovSelection2$avail/ #number of available locations for the corresopnding line of landcover type
+     sum(
+       landcovSelection2$avail #total number of available locations
+       )
+   ) 
+)
+landcovSelection2$lnSelection <- log(landcovSelection2$selection) 
+landcovSelection2
+
+write.table(landcovSelection2, "1storderelkselection.csv", sep=",", row.names = TRUE, col.names=TRUE)
+```
+
+Now lets look at 3rd order selection.
+
+```{r}
+# Plot summer use of elevation
+par(mfrow=c(2,1)) #mfrow=c(number of rows, number of columns) this function is used to combine two plots into one figure
+hist(elkusedavail_kdecomplete$elevation[elkusedavail_kdecomplete$used==1 & elkusedavail_kdecomplete$summer==1],breaks=50, xlim = c(min(elkusedavail_kdecomplete$elevation),max(elkusedavail_kdecomplete$elevation)), probability = TRUE, main="Summer Elk Habitat Selection", xlab="Elevation") 
+
+
+# Plot winter use of elevation
+hist(elkusedavail_kdecomplete$elevation[elkusedavail_kdecomplete$used==1 & elkusedavail_kdecomplete$summer==0],breaks=50,col="darkgray",xlim = c(min(elkusedavail_kdecomplete$elevation),max(elkusedavail_kdecomplete$elevation)), probability =TRUE,main="Winter Elk Habitat Selection", xlab="Elevation") 
+```
+(another way that you can plot the use of elevation side by side)
+```{r}
+## another way to make a similar graph
+histogram(~elevation|summer, data = elkusedavail_kdecomplete[elkusedavail_kdecomplete$used==1,], nint = 50)
+```
+
+## QUESTION: what can you tell about the use of elevation for elk between summer and winter???
+
+Lets now look at how elk used different landcover types. we will start by looking at the overall "yearly" use of habitat types.
+```{r, fig.height=5, fig.width=12}
+ggplot(
+  elkusedavail_kdecomplete[elkusedavail_kdecomplete$used==1,],
+    aes(x=landcover_type)
+  )+
+    geom_bar(
+      aes(
+        y=(..count..)/sum(..count..)
+        )
+      )+
+  ggtitle("Elk Use of Landcover") +
+  labs(x="Landcover Type",y="% Used") 
+  
+```
+
+
+
+Lets now look at how elk uselandcover types in summer vs winter.
+```{r, fig.height=5, fig.width=12}
+
+ggplot(
+  elkusedavail_kdecomplete[elkusedavail_kdecomplete$used==1,], #data to be used 
+    aes(
+      x=landcover_type, #column in the dataframe with categorical data
+      fill=as.factor(summer) #compares summer to winter values
+      )
+  )+
+    geom_bar(
+      aes(
+        y=(..count..)/sum(..count..), #column in the dataframe with categorical data
+        fill=as.factor(summer) # this equation plots the % use instead of frequency
+        )
+    )+
+ 
+  ggtitle("Elk Use of Landcover") + #title of the plot
+  labs(x="Landcover Type", #label of the x-axis
+       y="% Used", #label of the y axis
+       fill = "Season")+ #labels the "fill" variable
+  scale_fill_manual(labels = c("Winter", "Summer"), #labels the fill variables
+                    values = c("grey3", "grey50")#Specifying the colors of the bars
+                    )
+```
+
+
+Lets now compare how elk uselandcover types compared to their availability.
+```{r, fig.height=5, fig.width=12}
+
+ggplot(
+  elkusedavail_kdecomplete, #data to be used 
+    aes(
+      x=landcover_type, #column in the dataframe with categorical data
+      fill=as.factor(used) #compares summer to winter values
+      )
+  )+
+    geom_bar(
+      aes(
+        y=(..count..)/sum(..count..) #column in the dataframe with categorical data
+        #fill=as.factor(summer) # this equation plots the % use instead of frequency
+        )
+    )+
+ 
+  ggtitle("Elk Use of Landcover") +
+  labs(x="Landcover Type",y="% Used",fill = "")+
+  scale_fill_manual(labels = c("Available", "Used"), values = c("grey3", "grey50"))
+```
+
+Lets actually look at the selection ratios to see what landcover elk are selecting.
+```{r}
+#names.m = data.frame(unique(elkusedavail_kdecomplete$landcover),unique(elkusedavail_kdecomplete$landcover_type))
+# Now I put it order
+#names.m = names.m[order(names.m)[1:15],]
+#names.m
+
+# Define a factor variable, landcov.f, 
+# the sorted table makes defining the names of your factor level easy!
+#Note that there are many alternative ways of defining your landcover/habitattype 
+# as a factor. This method seemed most explicit in terms of defining the design matrix
+#elkusedavail_kdecomplete$landcov.f=factor(elkusedavail_kdecomplete$landcover,labels = names.m$unique.elkusedavail_kdecomplete.landcover_type.)
+
+elkusedavail_kdecomplete$used_factor<-as.factor(elkusedavail_kdecomplete$used)
+# Univariate Selection Ratio's
+landcovSelection_kde <-table(elkusedavail_kdecomplete$landcover_type, elkusedavail_kdecomplete$used_factor)
+ 
+# Univariate Selection Ratio's
+
+
+landcovSelection2 <- as.data.frame.matrix(landcovSelection_kde) #creates a matrix from the dataframe
+colnames(landcovSelection2)[1:2] <- c("avail","used") #label the columns in the matrix
+landcovSelection2$PercentUse <- 
+  
+    (landcovSelection2$used #number of used locations for the corresponding line of landcover type
+   / sum( 
+    landcovSelection2$used #total number of used locations
+    )
+  ) 
+  landcovSelection2$PercentAvailable <- 
+  (landcovSelection2$avail/ #number of available locations for the corresopnding line of landcover type
+     sum(
+       landcovSelection2$avail #total number of available locations
+       )
+   ) 
+
+landcovSelection2$selection <- 
+  (
+    (landcovSelection2$used #number of used locations for the corresponding line of landcover type
+   / sum( 
+    landcovSelection2$used #total number of used locations
+    )
+  ) 
+/ 
+  (landcovSelection2$avail/ #number of available locations for the corresopnding line of landcover type
+     sum(
+       landcovSelection2$avail #total number of available locations
+       )
+   ) 
+)
+landcovSelection2$lnSelection <- log(landcovSelection2$selection) 
+landcovSelection2
+
+write.table(landcovSelection2, "3rdorderelkselection.csv", sep=",", row.names = TRUE, col.names=TRUE)
+```

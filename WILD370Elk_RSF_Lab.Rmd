@@ -1,0 +1,253 @@
+---
+title: "Wild370RSFLab"
+author: "HansMartin"
+date: "November 13, 2017"
+output: html_document
+---
+
+Load necessary packages for analysis.
+```{r include=FALSE, echo=FALSE}
+#function to install and load required packages
+ipak <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+
+#load or install these packages:
+packages <- c("Rcpp","jsonlite","ks", "lattice", "plotrix", "adehabitatHR", "maptools", "foreign", "rgdal", "sp", "raster","ggplot2","colorRamps","rgeos","leaflet","lubridate", "htmlwidgets","move","tmap","tmaptools","lme4")
+
+#run function to install packages
+ipak(packages)
+```
+
+Read in the data
+```{r}
+elkdata<-read.csv( "elkusedavail_kde.csv")
+
+elkdata<-elkdata[complete.cases(elkdata[,4:6]),]
+
+```
+RSF
+```{r}
+#we need to first create an indicator variable for all used locations
+elkdata$used_factor<-factor(elkdata$used, labels=c('0','1'))
+```
+
+Next lets look at the covariate data available to us
+```{r}
+head(elkdata)
+```
+Lets start with a little data exploration:
+```{r}
+## numerical summaries.
+# example, one variable and summary statistic at a time
+tapply(elkdata$elevation, list(Elevation=elkdata$used_factor), mean, na.rm=TRUE)
+tapply(elkdata$totalbiomass, list(TotalForageBiomass=elkdata$used_factor), mean, na.rm=TRUE)
+```
+We can see that the mean used elevation is slightly lower than the available elevation and that the mean total forage biomass used is higher than that available.
+
+Let's examine this using boxplots:
+```{r}
+par(mfrow=c(1,2)) #this function plots the next two called plots next to each other
+boxplot(elevation~used_factor, #plot elevation by use / available
+        ylab="Elevation", #label for the y axis
+        xlab="USEDfactor", #label for the x axis
+        data=elkdata) #data to use (with the columns named elevation and use_factor)
+
+boxplot(totalbiomass~used_factor, #plot total biomass by use / available
+        ylab="Total Forage Biomass", #label for the y axis
+        xlab="USEDfactor",  #label for the x axis
+        data=elkdata) #data to use (with the columns named elevation and use_factor)
+```
+
+#Landcover types
+Lets now compare how elk use landcover types compared to their availability.
+```{r, fig.height=5, fig.width=12}
+
+ggplot(
+  elkdata, #data to be used 
+    aes(
+      x=landcover_type, #column in the dataframe with categorical data
+      fill=used_factor #compares summer to winter values
+      )
+  )+
+    geom_bar(
+      aes(
+        y=(..count..)/sum(..count..) #column in the dataframe with categorical data
+        #fill=as.factor(summer) # this equation plots the % use instead of frequency
+        )
+    )+
+ 
+  ggtitle("Elk Use and Availability of Different Landcover Variables") +
+  labs(x="Landcover Type",y="Density",fill = "")+
+  scale_fill_manual(labels = c("Available", "Used"), values = c("grey3", "grey50"))
+```
+
+# Objective 2 - Logistic Regression
+
+Lets first start out by running a naive model if we didn't understand why we need to use logistic regression
+```{r}
+par(mfrow=c(1,1)) ## note need to reset graphical parameter to 1x1
+## first analyze data incorrectly using linear regression
+naiveelevation <- lm(used~elevation, #specify the model-use (y-axis ie independent variable) as a function of elevation (x-axis ie independent variable)
+                     data = elkdata) #data used to fit the model
+summary(naiveelevation) #output of the model.
+```
+
+Ok, so we can see from above that elevation appears to be significant. lets look at what our predictions look like:
+```{r}
+naive_yhat <-predict(naiveelevation, #predict() is a function that allows us to use model coefficients (the effect of x on y) to predict new y values.
+                     type="response") #type specifies that we want predicted 'y' values.
+
+plot(elkdata$elevation, elkdata$used)#plot the actual observed data. (note that it only occurs at 0 and 1)
+lines(elkdata$elevation, naive_yhat, add=TRUE) #plot the estimated probability of use
+```
+
+Its important to note that on the above graph the predicted line will go beyond zero... which is impossible for Probability!!!
+
+#Lets now use logistic regresssion (the correct way to analyze use-availability models)
+
+Lets examine 4 different models:
+Model 1: elevation
+Model 2: forage
+Model 3: landcover
+Model 4: landcover+forage+elevation
+
+
+
+##Model 1: elevation
+```{r}
+Elevation_model<-glm(used_factor~elevation, #specify the model the effect of elevation on probability of use
+    data=elkdata, #specify the data set to use (must contain columns namedused_factor and elevation)
+    family=binomial(link="logit")) #specify the link function- remember the response in our data is 0 or 1 so this is a binomial probability and we will therefore use the logit function to force our linear predictors to be between 0-1
+```
+
+Now lets see what the model predicts: 
+```{r}
+elevation = seq(0,4000,10) #create a new elevation data which spreads from 0m to 4,000m by 10's
+pred_elevation = predict(Elevation_model,#specify the model that we want to use to predict probability of use based on our new dataset
+                         type="response", #we want the 'response' of the model
+                         newdata = data.frame(elevation) #the new data we want the model to use to predict probability of use
+                         )
+```
+
+Lets plot our predictions
+```{r}
+plot(elkdata$elevation, #observed elevation
+     elkdata$used, #observed use (o or 1)
+     xlim=c(0,4000), #specify what elevations to plot
+     xlab="Elevation", #x-axis label
+     ylab="Pr(Use)") #y-axis label
+lines(elevation,#dependent variable (x-axis)
+      pred_elevation, #indepedent variable (y-axis)
+      lty=1)#specify what kind of line we want (a solid line).
+```
+
+##Model 2: Forage biomass
+```{r}
+Forage_model<-glm(used_factor~totalbiomass, #specify the model the effect of elevation on probability of use
+    data=elkdata, #specify the data set to use (must contain columns namedused_factor and elevation)
+    family=binomial(link="logit")) #specify the link function- remember the response in our data is 0 or 1 so this is a binomial probability and we will therefore use the logit function to force our linear predictors to be between 0-1
+```
+
+Now lets see what the model predicts: 
+```{r}
+totalbiomass = seq(min(elkdata$totalbiomass,na.rm=T),max(elkdata$totalbiomass,na.rm=T),10) #create a new forage data which spreads from the minimum found in the data to the maximum found in the data by 10's
+pred_totalbiomass = predict(Forage_model,#specify the model that we want to use to predict probability of use based on our new dataset
+                         type="response", #we want the 'response' of the model
+                         newdata = data.frame(totalbiomass) #the new data we want the model to use to predict probability of use
+                         )
+```
+
+Lets plot our predictions
+```{r}
+plot(elkdata$totalbiomass, #observed elevation
+     elkdata$used, #observed use (o or 1)
+     xlab="Total Biomass", #x-axis label
+     ylab="Pr(Use)") #y-axis label
+lines(totalbiomass,#dependent variable (x-axis)
+      pred_totalbiomass, #indepedent variable (y-axis)
+      lty=1)#specify what kind of line we want (a solid line).
+```
+
+
+##Model 3: Landcover
+
+```{r}
+landcover_model<-glm(used_factor~landcover_type-1, 
+    data=elkdata,
+    family=binomial(link="logit"))
+```
+
+Lets examine our output:
+```{r}
+summary(landcover_model)
+
+```
+
+Form this output we can see the coefficient estimates (beta values) for each landcover type as well as the standard error (1.96 * SE = 95% confidence intervals)
+
+Another way that we can get the coefficints is using the coef() function in r
+
+```{r}
+coef(landcover_model)
+```
+
+##Lets run our final model that includes landcover type, elevation, and forage biomass:
+
+
+#Model 4: landcover+Elevation+totalbiomass
+```{r}
+Landcover_elevation_forage_model<-glm(used_factor~elevation+totalbiomass+landcover_type-1, 
+    data=elkdata,
+    family=binomial(link="logit"))
+```
+
+####Model comparison using AIC
+
+```{r}
+AIC_Table<-AIC(landcover_model,Landcover_elevation_forage_model,Forage_model,Elevation_model)
+#order the table based on AIC value. The model with the lowest AIC is the model that best describes the data
+AIC_Table<-AIC_Table[order(AIC_Table$AIC),] 
+AIC_Table
+```
+
+#Predicting the probability of use across available locations within the study area:
+
+Lets now use this model (model 4) to predict the probability of use across the study area
+
+Read in the study area data
+```{r}
+elkusedavail_studyareacomplete<-read.csv("elkused_avail_studyarea.csv")
+
+elkusedavail_studyareacomplete<-elkusedavail_studyareacomplete[complete.cases(elkusedavail_studyareacomplete[,1:6]),]
+```
+
+We will now use our coefficient values from our top model to predict the probability of use across the study area.
+
+What the predict function is doing is using the model coefficients to assess the probability of use across the entire study area.
+
+```{r}
+elkusedavail_studyareacomplete$predicted_pr_use<-predict(Landcover_elevation_forage_model,#specify the model that we want to use to predict probability of use based on our new dataset
+                         type="response", #we want the 'response' of the model
+                         newdata = elkusedavail_studyareacomplete #the new data we want the model to use to predict probability of use
+                         )
+```
+
+Lets plot where we expect elk to be based on our model:
+```{r}
+ggplot(elkusedavail_studyareacomplete, 
+       aes(x = Easting, 
+          y = Northing, 
+           col = predicted_pr_use #color based on the probability of use
+           )
+      ) + 
+  geom_point(size=2) + #use geom_point size 3
+  coord_equal() +
+  scale_colour_gradient(low = 'yellow', high = 'red')+ #scale the color so that red is a high probability of use and yellow is low probability of use
+  geom_point(data = elkusedavail_studyareacomplete[elkusedavail_studyareacomplete$used==1,], shape=18, size=0.5, col="black") #include points of actual use.
+```
+
+We are able to predict use in locations where the animals that we had collared did not use. If we included all elk data from the study we would see that these other locations are actually used by many individuals.

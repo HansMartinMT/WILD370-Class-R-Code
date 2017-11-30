@@ -1,0 +1,74 @@
+---
+title: "WolfHabitatUseLabWILD370"
+author: "HansMartin"
+date: "October 18, 2017"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+Load necessary packages for analysis.
+```{r include=FALSE, echo=FALSE}
+#function to install and load required packages
+ipak <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+
+#load or install these packages:
+packages <- c("ks", "lattice", "plotrix", "adehabitatHR", "maptools", "foreign", "rgdal", "sp", "raster",
+              "ggplot2","colorRamps","rgeos","leaflet","lubridate", "htmlwidgets","move")
+
+#run function to install packages
+ipak(packages)
+```
+Load wolf GPS Collar Data from Banff National Park
+```{r}
+datawolf<-read.csv("C:/Users/Hans Martin/Documents/R_Data/WILD370Project/wolfkde.csv")
+```
+
+Look at the first 6 lines of the data:
+```{r}
+head(datawolf)
+```
+
+As you can see, the GPS data for these wolves has already been linked with Habitat Data. These data include the landcover type: landcover16, Elevation, Distance from Human Access, and habitat suitability indexes for the 5 ungulate species that occur in Banff National park. 
+
+Before we begin to analyze the data, it may help to have a visualization of what the data looks like.
+```{r message=FALSE, echo=FALSE}
+wolfyht<-shapefile("C:/Users/Hans Martin/Documents/R_Data/WILD370Project/wolfyht.shp")
+head(wolfyht)
+str(wolfyht)
+```
+
+Now lets plot the data so you can get a feel for the landscape that these animals are living in.
+
+```{r}
+
+# base plot of wolf packs by color with legend
+
+plot(wolfyht@data$EASTING,wolfyht@data$NORTHING, col=c("red","blue")[wolfyht@data$PackID],ylab="Northing",xlab="Easting")
+legend(555000,5742500,unique(wolfyht@data$Pack),col=c("blue","red"),pch=1)
+```
